@@ -48,8 +48,8 @@ class Nat(app_manager.OSKenApp):
         # Maximum NAT table entries per server address/port
         self.max_entries_per_server = 65000
         
-        # Timeout for NAT entries (10 seconds as specified)
-        self.timeout = 10  # seconds
+        # Timeout (in seconds) for NAT entries (10 seconds as specified, which is much shorter than what the RFC suggests, but whatever)
+        self.timeout = 10 
 
     def _send_packet(self, datapath, port, pkt):
         ofproto = datapath.ofproto
@@ -261,9 +261,19 @@ class Nat(app_manager.OSKenApp):
         print(f"NAT flows installed for {client_ip}:{client_port} <-> {self.nat_ip}:{nat_port} <-> {server_ip}:{server_port}")
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def _packet_in_handler(self, ev):
+    def _packet_in_handler(self, ev): # invoked every time the controller receives a packet
         msg = ev.msg
         in_port, pkt = (msg.match['in_port'], packet.Packet(msg.data))
+        
+        # Debug print to show when controller receives packets (just to verify that every data packet is not redirected to the controller -- delete later)
+        eth_pkt = pkt.get_protocol(ethernet.ethernet)
+        if eth_pkt and eth_pkt.ethertype == ETH_TYPE_IP:
+            ip_pkt = pkt.get_protocol(ipv4.ipv4)
+            if ip_pkt and ip_pkt.proto == in_proto.IPPROTO_TCP:
+                tcp_pkt = pkt.get_protocol(tcp.tcp)
+                if tcp_pkt:
+                    print(f"CONTROLLER RECEIVED PACKET: {ip_pkt.src}:{tcp_pkt.src_port} -> {ip_pkt.dst}:{tcp_pkt.dst_port} (TCP Flags: {tcp_pkt.bits})")
+        
         dp = msg.datapath
         ofp, psr, did = (dp.ofproto, dp.ofproto_parser, format(dp.id, '016d'))
         eth = pkt.get_protocols(ethernet.ethernet)[0]
