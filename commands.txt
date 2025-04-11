@@ -1,0 +1,18 @@
+osken-manager nat.py
+
+sudo mn --custom nattopo.py --topo nattopo --mac --controller remote
+
+-_-_-_-_-_-_-_-_-_-_-_-_
+
+h1 tcpdump -w h1.pcap &
+h1 netcat -l 50000 &
+h2 tcpdump -w h2.pcap &
+h2 netcat h1 50000
+a
+^C
+h1 pkill tcpdump
+h1 pkill netcat
+h2 pkill tcpdump
+
+h2 tcpdump -nr h2.pcap
+h1 tcpdump -nr h1.pcap
