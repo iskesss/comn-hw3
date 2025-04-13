@@ -21,27 +21,23 @@ class Nat(app_manager.OSKenApp):
 
     def __init__(self, *args, **kwargs):
         super(Nat, self).__init__(*args, **kwargs)
-        self.lmac = '00:00:00:00:00:10'  # MAC address for private network
-        self.emac = '00:00:00:00:00:20'  # MAC address for public network
+        self.lmac = '00:00:00:00:00:10'  # MAC addr for our private network
+        self.emac = '00:00:00:00:00:20'  # MAC addr for our public network
         self.hostmacs = {
                 '10.0.1.100': '00:00:00:00:00:01',  # h1
                 '10.0.2.100': '00:00:00:00:00:02',  # h2
                 '10.0.2.101': '00:00:00:00:00:03',  # h3
                 }
         
-        # NAT translation table
-        # Format: {(priv_ip, priv_port, pub_ip, pub_port): (nat_port, timestamp)}
+        # format for the NAT table is {(priv_ip, priv_port, pub_ip, pub_port): (nat_port, timestamp)}
         self.nat_table = {}
         
-        # Set of available ports for NAT
-        # For testing with 4 ports limit (change to 65000 for production)
-        self.MAX_PORTS = 65000
-        self.available_ports = set(range(1, self.MAX_PORTS + 1))
+        self.MAX_PORTS = 65000 # as per requirement 4
+        self.available_ports = set( range(1, self.MAX_PORTS + 1) )
         
-        # Constants
-        self.NAT_PUBLIC_IP = '10.0.1.2'  # NAT's public IP address
-        self.NAT_PRIVATE_IP = '10.0.2.1'  # NAT's private IP address
-        self.NAT_TIMEOUT = 10  # Timeout in seconds (use 10 for submission)
+        self.NAT_PUBLIC_IP = '10.0.1.2'
+        self.NAT_PRIVATE_IP = '10.0.2.1'
+        self.NAT_TIMEOUT = 10
 
     def _send_packet(self, datapath, port, pkt):
         ofproto = datapath.ofproto
@@ -57,68 +53,68 @@ class Nat(app_manager.OSKenApp):
         return out
 
     def _send_rst_packet(self, datapath, in_port, orig_pkt):
-        """Send a RST packet to client when the NAT table is full"""
+        # we use this func to send an RST packet to our client when the NAT table is full
         eth = orig_pkt.get_protocols(ethernet.ethernet)[0]
         ip_header = orig_pkt.get_protocol(ipv4.ipv4)
         tcp_header = orig_pkt.get_protocol(tcp.tcp)
         
         print("NAT table full! Sending RST packet to client.")
         
-        # Create a new packet with RST flag
         pkt = packet.Packet()
         
-        # Add ethernet header (swap src and dst)
-        pkt.add_protocol(ethernet.ethernet(
-            dst=eth.src,
-            src=self.lmac,
+        # add an ethernet header
+        pkt.add_protocol(ethernet.ethernet( 
+            dst=eth.src, # swap!
+            src=self.lmac, # swap!
             ethertype=ETH_TYPE_IP
         ))
         
-        # Add IP header (swap src and dst)
+        # add an IP header
         pkt.add_protocol(ipv4.ipv4(
-            dst=ip_header.src,
-            src=ip_header.dst,
+            dst=ip_header.src, # swap!
+            src=ip_header.dst, # swap!
             proto=ip_header.proto
         ))
         
-        # Add TCP header with RST flag
+        # add a TCP header with the RST flag
         pkt.add_protocol(tcp.tcp(
-            src_port=tcp_header.dst_port,
-            dst_port=tcp_header.src_port,
+            src_port=tcp_header.dst_port, # swap!
+            dst_port=tcp_header.src_port, # swap!
             seq=tcp_header.ack if tcp_header.ack else 0,
             ack=tcp_header.seq + 1 if tcp_header.seq else 0,
-            bits=TCP_RST | TCP_ACK
+            bits=TCP_RST | TCP_ACK # and then add an RST flag as per requirement 3 of this assigngment
         ))
         
-        # Send the packet
+        # send our packet
         out = self._send_packet(datapath, in_port, pkt)
         datapath.send_msg(out)
 
     def _clear_expired_entries(self):
-        """Clear expired NAT entries and return any freed ports"""
+        # we use this func to clear expired NAT table entries and return any freed ports
+        
         current_time = time.time()
-        expired_entries = []
+        expired_entries = [] # just a basic Python list
         
-        # Find expired entries
+        # find expired entries
         for key, (nat_port, timestamp) in self.nat_table.items():
-            if current_time - timestamp > self.NAT_TIMEOUT:
-                expired_entries.append((key, nat_port))
+            if current_time - timestamp > self.NAT_TIMEOUT: 
+                expired_entries.append( (key, nat_port) )
         
-        # Remove expired entries
+        # remove the expired entries we found 
         for (key, nat_port) in expired_entries:
-            del self.nat_table[key]
+            del self.nat_table[key] # destroy >:)
             self.available_ports.add(nat_port)
-            print(f"Cleared expired NAT entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
+            print(f"Cleared expired entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
         
         if expired_entries:
             print(f"Available ports after cleanup: {self.available_ports}")
             
-        return bool(expired_entries)
+        return bool(expired_entries) # 1 if success, 0 if literally no ports were able to be freed
 
     def _get_available_port(self):
-        """Get an available port for NAT or None if no port is available"""
+        # we use this func to try and get an available port for NAT
         if not self.available_ports:
-            # Try to find and clear an expired entry
+            # then we should try to find & clear an expired entry
             self._clear_expired_entries()
         
         if self.available_ports:
@@ -148,25 +144,21 @@ class Nat(app_manager.OSKenApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
-        in_port, pkt = (msg.match['in_port'], packet.Packet(msg.data))
+        in_port, pkt = ( msg.match['in_port'], packet.Packet(msg.data) )
         dp = msg.datapath
         ofp, psr, did = (dp.ofproto, dp.ofproto_parser, format(dp.id, '016d'))
         eth = pkt.get_protocols(ethernet.ethernet)[0]
 
-        # Handle ARP requests
+        # handle ARPs
         if eth.ethertype == ETH_TYPE_ARP:
-            ah = pkt.get_protocols(arp.arp)[0]
-            if ah.opcode == arp.ARP_REQUEST:
+            arp_header = pkt.get_protocols(arp.arp)[0]
+            if arp_header.opcode == arp.ARP_REQUEST: # we only care about requests
                 print('ARP', pkt)
-                ar = packet.Packet()
-                ar.add_protocol(ethernet.ethernet(ethertype=eth.ethertype,
-                    dst=eth.src,
-                    src=self.emac if in_port == 1 else self.lmac))
-                ar.add_protocol(arp.arp(opcode=arp.ARP_REPLY,
-                    src_mac=self.emac if in_port == 1 else self.lmac,
-                    dst_mac=ah.src_mac, src_ip=ah.dst_ip, dst_ip=ah.src_ip))
-                out = self._send_packet(dp, in_port, ar)
-                print('ARP Rep', ar)
+                arp_reply = packet.Packet()
+                arp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=eth.src, src=self.emac if in_port == 1 else self.lmac))
+                arp_reply.add_protocol(arp.arp(opcode=arp.ARP_REPLY, src_mac=self.emac if in_port == 1 else self.lmac, dst_mac=arp_header.src_mac, src_ip=arp_header.dst_ip, dst_ip=arp_header.src_ip))
+                out = self._send_packet(dp, in_port, arp_reply)
+                print('ARP Rep', arp_reply)
                 dp.send_msg(out)
             return
 
