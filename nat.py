@@ -54,7 +54,7 @@ class Nat(app_manager.OSKenApp):
         ip_header = orig_pkt.get_protocol(ipv4.ipv4)
         tcp_header = orig_pkt.get_protocol(tcp.tcp)
         
-        print("NAT table full! Sending RST packet to client.")
+        # print("NAT table full! Sending RST packet to client.")
         
         pkt = packet.Packet()
         
@@ -96,8 +96,8 @@ class Nat(app_manager.OSKenApp):
                 # since we found one, remove it and return success
                 del self.nat_table[key]
                 self.free_ports.add(nat_port)
-                print(f"Cleared expired entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
-                print(f"Available ports after cleanup: {self.free_ports}")
+                # print(f"Cleared expired entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
+                # print(f"Available ports after cleanup: {self.free_ports}")
                 return True # yay! 
     
         return False  # no expired entries could be found 
@@ -145,12 +145,12 @@ class Nat(app_manager.OSKenApp):
         if eth.ethertype == ETH_TYPE_ARP:
             arp_header = pkt.get_protocols(arp.arp)[0]
             if arp_header.opcode == arp.ARP_REQUEST: # we only care about requests
-                print('ARP', pkt)
+                # print('ARP', pkt)
                 arp_reply = packet.Packet()
                 arp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=eth.src, src=self.emac if in_port == 1 else self.lmac))
                 arp_reply.add_protocol(arp.arp(opcode=arp.ARP_REPLY, src_mac=self.emac if in_port == 1 else self.lmac, dst_mac=arp_header.src_mac, src_ip=arp_header.dst_ip, dst_ip=arp_header.src_ip))
                 out = self._send_packet(dp, in_port, arp_reply)
-                print('ARP Rep', arp_reply)
+                # print('ARP Rep', arp_reply)
                 dp.send_msg(out)
             return
 
@@ -192,9 +192,9 @@ class Nat(app_manager.OSKenApp):
                     # okay yay there was space, let's create our new NAT entry with the current timestamp
                     self.nat_table[nat_tuple_key] = ( nat_port, time.time() )
                     
-                    print(f"Created NAT entry: {private_ip}:{private_port} -> {self.NAT_PUBLIC_IP}:{nat_port}")
-                    print(f"Available ports: {self.free_ports}")
-                    print(f"Table entries occupied: {len(self.nat_table)}")
+                    # print(f"Created NAT entry: {private_ip}:{private_port} -> {self.NAT_PUBLIC_IP}:{nat_port}")
+                    # print(f"Available ports: {self.free_ports}")
+                    # print(f"Table entries occupied: {len(self.nat_table)}")
                     
                     # HERE WE INSTALL FLOW RULES FOR BOTH POSSIBLE DIRECTIONS...
                     
