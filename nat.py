@@ -33,7 +33,7 @@ class Nat(app_manager.OSKenApp):
         self.nat_table = {}
         
         self.MAX_PORTS = 65000 # as per requirement 4
-        self.available_ports = set( range(1, self.MAX_PORTS + 1) )
+        self.free_ports = set( range(1, self.MAX_PORTS + 1) )
         
         self.NAT_PUBLIC_IP = '10.0.1.2'
         self.NAT_PRIVATE_IP = '10.0.2.1'
@@ -44,12 +44,8 @@ class Nat(app_manager.OSKenApp):
         parser = datapath.ofproto_parser
         pkt.serialize()
         data = pkt.data
-        actions = [parser.OFPActionOutput(port=port)]
-        out = parser.OFPPacketOut(datapath=datapath,
-                                  buffer_id=ofproto.OFP_NO_BUFFER,
-                                  in_port=ofproto.OFPP_CONTROLLER,
-                                  actions=actions,
-                                  data=data)
+        actions = [ parser.OFPActionOutput(port=port) ]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
         return out
 
     def _send_rst_packet(self, datapath, in_port, orig_pkt):
@@ -82,7 +78,7 @@ class Nat(app_manager.OSKenApp):
             dst_port=tcp_header.src_port, # swap!
             seq=tcp_header.ack if tcp_header.ack else 0,
             ack=tcp_header.seq + 1 if tcp_header.seq else 0,
-            bits=TCP_RST | TCP_ACK # and then add an RST flag as per requirement 3 of this assigngment
+            bits= ( TCP_RST | TCP_ACK ) # and then add an RST flag as per requirement 3 of this assigngment
         ))
         
         # send our packet
@@ -99,21 +95,21 @@ class Nat(app_manager.OSKenApp):
             if current_time - timestamp > self.NAT_TIMEOUT: 
                 # since we found one, remove it and return success
                 del self.nat_table[key]
-                self.available_ports.add(nat_port)
+                self.free_ports.add(nat_port)
                 print(f"Cleared expired entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
-                print(f"Available ports after cleanup: {self.available_ports}")
+                print(f"Available ports after cleanup: {self.free_ports}")
                 return True # yay! 
     
         return False  # no expired entries could be found 
 
     def _get_available_port(self):
         # we use this func to try and get an available port for NAT
-        if not self.available_ports:
+        if not self.free_ports:
             # then we should try to find & clear an expired entry
             self._clear_one_expired_entry()
         
-        if self.available_ports:
-            return self.available_ports.pop()
+        if self.free_ports:
+            return self.free_ports.pop()
         return None
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -123,7 +119,7 @@ class Nat(app_manager.OSKenApp):
         acts = [psr.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)]
         self.add_flow(dp, 0, psr.OFPMatch(), acts)
 
-    def add_flow(self, dp, prio, match, acts, buffer_id=None, delete=False): # note to self: features_handler calls this 
+    def add_flow(self, dp, prio, match, acts, buffer_id=None, delete=False): # note to self: remember that features_handler calls this 
         # we use this func to add or rm flow rules within the switch 
         ofp, psr = (dp.ofproto, dp.ofproto_parser)
         
@@ -160,43 +156,44 @@ class Nat(app_manager.OSKenApp):
 
         # handle IP packets
         if eth.ethertype == ETH_TYPE_IP:
-            ip_pkt = pkt.get_protocol(ipv4.ipv4) # grab ipv4 header
+            ipv4_header = pkt.get_protocol(ipv4.ipv4) # grab ipv4 header
             
             # we only wanna handle TCP packets
-            if ip_pkt and ip_pkt.proto == in_proto.IPPROTO_TCP:
-                tcp_pkt = pkt.get_protocol(tcp.tcp) # grab TCP header if so
+            if ipv4_header and (ipv4_header.proto == in_proto.IPPROTO_TCP):
+                tcp_header = pkt.get_protocol(tcp.tcp) # grab TCP header if so
                 
                 # handle packets from private -> public
-                if in_port != 1 and ip_pkt.dst.startswith('10.0.1'):
-                    private_ip = ip_pkt.src
-                    private_port = tcp_pkt.src_port
-                    public_ip = ip_pkt.dst
-                    public_port = tcp_pkt.dst_port
+                if (in_port != 1) and (ipv4_header.dst.startswith('10.0.1')):
+                    private_ip = ipv4_header.src
+                    private_port = tcp_header.src_port
+
+                    public_ip = ipv4_header.dst
+                    public_port = tcp_header.dst_port
                     
-                    nat_key = (private_ip, private_port, public_ip, public_port) # let's make a 4-tuple for easy NAT table lookups
+                    nat_tuple_key = (private_ip, private_port, public_ip, public_port) # let's make a 4-tuple for easy NAT table lookups
                     
                     # we gotta make sure this connection doesn't already exist ':D 
-                    if nat_key in self.nat_table:
+                    if nat_tuple_key in self.nat_table:
                         # connection already exists so let's just update the timestamp and return immediately
-                        nat_port = self.nat_table[nat_key][0]
-                        self.nat_table[nat_key] = (nat_port, time.time())
+                        nat_port = self.nat_table[nat_tuple_key][0]
+                        self.nat_table[nat_tuple_key] = (nat_port, time.time())
                         return
                     
                     # connection didn't already exist, lets proceed 
                     nat_port = self._get_available_port() 
                     
                     if nat_port is None: 
-                        # unfortunately the NAT table is completely full!
+                        # ummmm unfortunately the NAT table is completely full!
                         # we couldn't even make space by kicking out an expired entry.
                         # let's just send an RST packet and return, as per requirement 3.
                         self._send_rst_packet(dp, in_port, pkt)
                         return
 
                     # okay yay there was space, let's create our new NAT entry with the current timestamp
-                    self.nat_table[nat_key] = ( nat_port, time.time() )
+                    self.nat_table[nat_tuple_key] = ( nat_port, time.time() )
                     
                     print(f"Created NAT entry: {private_ip}:{private_port} -> {self.NAT_PUBLIC_IP}:{nat_port}")
-                    print(f"Available ports: {self.available_ports}")
+                    print(f"Available ports: {self.free_ports}")
                     print(f"Table entries occupied: {len(self.nat_table)}")
                     
                     # HERE WE INSTALL FLOW RULES FOR BOTH POSSIBLE DIRECTIONS...
@@ -253,7 +250,7 @@ class Nat(app_manager.OSKenApp):
                         psr.OFPActionSetField(eth_dst = self.hostmacs[public_ip]),
                         psr.OFPActionSetField(ipv4_src = self.NAT_PUBLIC_IP),
                         psr.OFPActionSetField(tcp_src = nat_port),
-                        psr.OFPActionOutput(port = 1)
+                        psr.OFPActionOutput(port= 1)
                     ]
                     
                     data = None
