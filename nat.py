@@ -32,7 +32,7 @@ class Nat(app_manager.OSKenApp):
         # format for the NAT table is {(priv_ip, priv_port, pub_ip, pub_port): (nat_port, timestamp)}
         self.nat_table = {}
         
-        self.MAX_PORTS = 4 # as per requirement 4
+        self.MAX_PORTS = 65000 # as per requirement 4
         self.available_ports = set( range(1, self.MAX_PORTS + 1) )
         
         self.NAT_PUBLIC_IP = '10.0.1.2'
@@ -132,14 +132,15 @@ class Nat(app_manager.OSKenApp):
         # we use this func to add or rm flow rules within the switch 
         ofp, psr = (dp.ofproto, dp.ofproto_parser)
         
-        bid = buffer_id if buffer_id is not None else ofp.OFP_NO_BUFFER
+        bufferfish = buffer_id if buffer_id is not None else ofp.OFP_NO_BUFFER # I really wanted to call it bufferfish
 
         if delete:
-            mod = psr.OFPFlowMod(datapath=dp, command=dp.ofproto.OFPFC_DELETE, out_port=dp.ofproto.OFPP_ANY, out_group=dp.ofproto.OFPG_ANY, match=match)
-        else:
-            ins = [ psr.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, acts) ]
-            mod = psr.OFPFlowMod(datapath=dp, buffer_id=bid, priority=prio, match=match, instructions=ins)
-        dp.send_msg(mod)
+            modification = psr.OFPFlowMod(datapath=dp, command=dp.ofproto.OFPFC_DELETE, out_port=dp.ofproto.OFPP_ANY, out_group=dp.ofproto.OFPG_ANY, match=match)
+        else: # otherwise we wanna add a new rule to the switch
+            instructions = [ psr.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, acts) ]
+            modification = psr.OFPFlowMod(datapath=dp, buffer_id=bufferfish, priority=prio, match=match, instructions=instructions)
+
+        dp.send_msg(modification)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -170,50 +171,50 @@ class Nat(app_manager.OSKenApp):
             if ip_pkt and ip_pkt.proto == in_proto.IPPROTO_TCP:
                 tcp_pkt = pkt.get_protocol(tcp.tcp) # grab TCP header if so
                 
-                # Handle packets from private network to public network
+                # handle packets from private -> public
                 if in_port != 1 and ip_pkt.dst.startswith('10.0.1'):
                     private_ip = ip_pkt.src
                     private_port = tcp_pkt.src_port
                     public_ip = ip_pkt.dst
                     public_port = tcp_pkt.dst_port
                     
-                    nat_key = (private_ip, private_port, public_ip, public_port) # let's make a 4-tuple for simplicity's sake 
+                    nat_key = (private_ip, private_port, public_ip, public_port) # let's make a 4-tuple for easy NAT table lookups
                     
                     # we gotta make sure this connection doesn't already exist ':D 
                     if nat_key in self.nat_table:
-                        # Update timestamp for existing connection
+                        # connection already exists so let's just update the timestamp and return immediately
                         nat_port = self.nat_table[nat_key][0]
                         self.nat_table[nat_key] = (nat_port, time.time())
-                        
-                        # Packet is already handled by existing flow rules
                         return
                     
-                    # This is a new connection, get NAT port
-                    nat_port = self._get_available_port()
+                    # connection didn't already exist, lets proceed 
+                    nat_port = self._get_available_port() 
                     
-                    if nat_port is None:
-                        # NAT table is full - send RST packet
+                    if nat_port is None: 
+                        # unfortunately the NAT table is completely full!
+                        # we couldn't even make space by kicking out an expired entry.
+                        # let's just send an RST packet and return, as per requirement 3.
                         self._send_rst_packet(dp, in_port, pkt)
                         return
-                    
-                    # Create a new NAT entry
-                    self.nat_table[nat_key] = (nat_port, time.time())
+
+                    # okay yay there was space, let's create our new NAT entry with the current timestamp
+                    self.nat_table[nat_key] = ( nat_port, time.time() )
                     
                     print(f"Created NAT entry: {private_ip}:{private_port} -> {self.NAT_PUBLIC_IP}:{nat_port}")
                     print(f"Available ports: {self.available_ports}")
                     print(f"Total active connections: {len(self.nat_table)}")
                     
-                    # Install flow rules for both directions
+                    # HERE WE INSTALL FLOW RULES FOR BOTH POSSIBLE DIRECTIONS...
                     
-                    # Private to Public (SNAT)
+                    # priv —> pub (SNAT)
                     match_ptop = psr.OFPMatch(
-                        in_port=in_port,
-                        eth_type=ETH_TYPE_IP,
-                        ipv4_src=private_ip,
-                        ipv4_dst=public_ip,
-                        ip_proto=in_proto.IPPROTO_TCP,
-                        tcp_src=private_port,
-                        tcp_dst=public_port
+                        in_port = in_port,
+                        eth_type = ETH_TYPE_IP,
+                        ipv4_src = private_ip,
+                        ipv4_dst = public_ip,
+                        ip_proto = in_proto.IPPROTO_TCP,
+                        tcp_src = private_port,
+                        tcp_dst = public_port
                     )
                     
                     actions_ptop = [
@@ -226,7 +227,7 @@ class Nat(app_manager.OSKenApp):
                     
                     self.add_flow(dp, 100, match_ptop, actions_ptop, msg.buffer_id)
                     
-                    # Public to Private (DNAT)
+                    # pub —> priv (DNAT)
                     match_ptop = psr.OFPMatch(
                         in_port=1,
                         eth_type=ETH_TYPE_IP,
@@ -247,35 +248,32 @@ class Nat(app_manager.OSKenApp):
                     
                     self.add_flow(dp, 100, match_ptop, actions_ptop)
                     
-                    # If we already used the buffer_id in the flow_mod,
-                    # we don't need to send a packet out
+                    # if we used the buffer_id in the flow_mod, then we can stop here! no need to send a packet
                     if msg.buffer_id != ofp.OFP_NO_BUFFER:
                         return
                     
-                    # Forward the first packet in the new connection
+                    # forward the first packet in the new connection
                     actions = [
-                        psr.OFPActionSetField(eth_src=self.emac),
-                        psr.OFPActionSetField(eth_dst=self.hostmacs[public_ip]),
-                        psr.OFPActionSetField(ipv4_src=self.NAT_PUBLIC_IP),
-                        psr.OFPActionSetField(tcp_src=nat_port),
-                        psr.OFPActionOutput(port=1)
+                        psr.OFPActionSetField(eth_src = self.emac),
+                        psr.OFPActionSetField(eth_dst = self.hostmacs[public_ip]),
+                        psr.OFPActionSetField(ipv4_src = self.NAT_PUBLIC_IP),
+                        psr.OFPActionSetField(tcp_src = nat_port),
+                        psr.OFPActionOutput(port = 1)
                     ]
                     
                     data = None
                     if msg.buffer_id == ofp.OFP_NO_BUFFER:
                         data = msg.data
+                    else:
+                        data = None
                     
-                    out = psr.OFPPacketOut(
-                        datapath=dp,
-                        buffer_id=ofp.OFP_NO_BUFFER,
-                        in_port=in_port,
-                        actions=actions,
-                        data=data
-                    )
+                    out = psr.OFPPacketOut( datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=in_port, actions=actions, data=data )
+
                     dp.send_msg(out)
                     return
         
-        # Drop all other packets
-        actions = [] # TODO: I CANNOT REMEMBER WHY I DID THIS
+        # drop non-TCP non-IPv4 packets 
+        actions = []
         out = psr.OFPPacketOut(datapath=dp, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=None if msg.buffer_id != ofp.OFP_NO_BUFFER else msg.data)
-        dp.send_msg(out)
+        # ^ create packet (out) with an empty action list
+        dp.send_msg(out) # and send to switch
