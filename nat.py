@@ -32,7 +32,7 @@ class Nat(app_manager.OSKenApp):
         # format for the NAT table is {(priv_ip, priv_port, pub_ip, pub_port): (nat_port, timestamp)}
         self.nat_table = {}
         
-        self.MAX_PORTS = 65000 # as per requirement 4
+        self.MAX_PORTS = 4 # as per requirement 4
         self.available_ports = set( range(1, self.MAX_PORTS + 1) )
         
         self.NAT_PUBLIC_IP = '10.0.1.2'
@@ -137,7 +137,7 @@ class Nat(app_manager.OSKenApp):
         if delete:
             mod = psr.OFPFlowMod(datapath=dp, command=dp.ofproto.OFPFC_DELETE, out_port=dp.ofproto.OFPP_ANY, out_group=dp.ofproto.OFPG_ANY, match=match)
         else:
-            ins = [psr.OFPInstructionActions( ofp.OFPIT_APPLY_ACTIONS, acts )]
+            ins = [ psr.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, acts) ]
             mod = psr.OFPFlowMod(datapath=dp, buffer_id=bid, priority=prio, match=match, instructions=ins)
         dp.send_msg(mod)
 
@@ -162,13 +162,13 @@ class Nat(app_manager.OSKenApp):
                 dp.send_msg(out)
             return
 
-        # Handle IP packets
+        # handle IP packets
         if eth.ethertype == ETH_TYPE_IP:
-            ip_pkt = pkt.get_protocol(ipv4.ipv4)
+            ip_pkt = pkt.get_protocol(ipv4.ipv4) # grab ipv4 header
             
-            # Only handle TCP packets
+            # we only wanna handle TCP packets
             if ip_pkt and ip_pkt.proto == in_proto.IPPROTO_TCP:
-                tcp_pkt = pkt.get_protocol(tcp.tcp)
+                tcp_pkt = pkt.get_protocol(tcp.tcp) # grab TCP header if so
                 
                 # Handle packets from private network to public network
                 if in_port != 1 and ip_pkt.dst.startswith('10.0.1'):
@@ -177,7 +177,7 @@ class Nat(app_manager.OSKenApp):
                     public_ip = ip_pkt.dst
                     public_port = tcp_pkt.dst_port
                     
-                    nat_key = (private_ip, private_port, public_ip, public_port) # for simplicity's sake
+                    nat_key = (private_ip, private_port, public_ip, public_port) # let's make a 4-tuple for simplicity's sake 
                     
                     # we gotta make sure this connection doesn't already exist ':D 
                     if nat_key in self.nat_table:
@@ -276,12 +276,6 @@ class Nat(app_manager.OSKenApp):
                     return
         
         # Drop all other packets
-        actions = []
-        out = psr.OFPPacketOut(
-            datapath=dp,
-            buffer_id=msg.buffer_id,
-            in_port=in_port,
-            actions=actions,
-            data=None if msg.buffer_id != ofp.OFP_NO_BUFFER else msg.data
-        )
+        actions = [] # TODO: I CANNOT REMEMBER WHY I DID THIS
+        out = psr.OFPPacketOut(datapath=dp, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=None if msg.buffer_id != ofp.OFP_NO_BUFFER else msg.data)
         dp.send_msg(out)
