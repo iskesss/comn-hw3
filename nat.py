@@ -89,33 +89,28 @@ class Nat(app_manager.OSKenApp):
         out = self._send_packet(datapath, in_port, pkt)
         datapath.send_msg(out)
 
-    def _clear_expired_entries(self):
-        # we use this func to clear expired NAT table entries and return any freed ports
+    def _clear_one_expired_entry(self) -> bool:
+        # we use this func to clear an expired NAT table entry
         
         current_time = time.time()
-        expired_entries = [] # just a basic Python list
         
-        # find expired entries
+        # find one singular expired entry
         for key, (nat_port, timestamp) in self.nat_table.items():
             if current_time - timestamp > self.NAT_TIMEOUT: 
-                expired_entries.append( (key, nat_port) )
-        
-        # remove the expired entries we found 
-        for (key, nat_port) in expired_entries:
-            del self.nat_table[key] # destroy >:)
-            self.available_ports.add(nat_port)
-            print(f"Cleared expired entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
-        
-        if expired_entries:
-            print(f"Available ports after cleanup: {self.available_ports}")
-            
-        return bool(expired_entries) # 1 if success, 0 if literally no ports were able to be freed
+                # since we found one, remove it and return success
+                del self.nat_table[key]
+                self.available_ports.add(nat_port)
+                print(f"Cleared expired entry: {key[0]}:{key[1]} -> {self.NAT_PUBLIC_IP}:{nat_port}")
+                print(f"Available ports after cleanup: {self.available_ports}")
+                return True # yay! 
+    
+        return False  # no expired entries could be found 
 
     def _get_available_port(self):
         # we use this func to try and get an available port for NAT
         if not self.available_ports:
             # then we should try to find & clear an expired entry
-            self._clear_expired_entries()
+            self._clear_one_expired_entry()
         
         if self.available_ports:
             return self.available_ports.pop()
@@ -202,7 +197,7 @@ class Nat(app_manager.OSKenApp):
                     
                     print(f"Created NAT entry: {private_ip}:{private_port} -> {self.NAT_PUBLIC_IP}:{nat_port}")
                     print(f"Available ports: {self.available_ports}")
-                    print(f"Total active connections: {len(self.nat_table)}")
+                    print(f"Table entries occupied: {len(self.nat_table)}")
                     
                     # HERE WE INSTALL FLOW RULES FOR BOTH POSSIBLE DIRECTIONS...
                     
