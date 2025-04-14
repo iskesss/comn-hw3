@@ -122,23 +122,23 @@ class Nat(app_manager.OSKenApp):
         return None
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def features_handler(self, ev):
+    def features_handler(self, ev): # this gets called whenever our switch connects to the controller
         dp = ev.msg.datapath
         ofp, psr = (dp.ofproto, dp.ofproto_parser)
         acts = [psr.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)]
         self.add_flow(dp, 0, psr.OFPMatch(), acts)
 
-    def add_flow(self, dp, prio, match, acts, buffer_id=None, delete=False):
+    def add_flow(self, dp, prio, match, acts, buffer_id=None, delete=False): # note to self: features_handler calls this 
+        # we use this func to add or rm flow rules within the switch 
         ofp, psr = (dp.ofproto, dp.ofproto_parser)
+        
         bid = buffer_id if buffer_id is not None else ofp.OFP_NO_BUFFER
+
         if delete:
-            mod = psr.OFPFlowMod(datapath=dp, command=dp.ofproto.OFPFC_DELETE,
-                    out_port=dp.ofproto.OFPP_ANY, out_group=dp.ofproto.OFPG_ANY,
-                    match=match)
+            mod = psr.OFPFlowMod(datapath=dp, command=dp.ofproto.OFPFC_DELETE, out_port=dp.ofproto.OFPP_ANY, out_group=dp.ofproto.OFPG_ANY, match=match)
         else:
-            ins = [psr.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, acts)]
-            mod = psr.OFPFlowMod(datapath=dp, buffer_id=bid, priority=prio,
-                                match=match, instructions=ins)
+            ins = [psr.OFPInstructionActions( ofp.OFPIT_APPLY_ACTIONS, acts )]
+            mod = psr.OFPFlowMod(datapath=dp, buffer_id=bid, priority=prio, match=match, instructions=ins)
         dp.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -146,7 +146,7 @@ class Nat(app_manager.OSKenApp):
         msg = ev.msg
         in_port, pkt = ( msg.match['in_port'], packet.Packet(msg.data) )
         dp = msg.datapath
-        ofp, psr, did = (dp.ofproto, dp.ofproto_parser, format(dp.id, '016d'))
+        ofp, psr, _ = (dp.ofproto, dp.ofproto_parser, format(dp.id, '016d')) # I wanted to make dp.id a zero-padded int of width 16
         eth = pkt.get_protocols(ethernet.ethernet)[0]
 
         # handle ARPs
@@ -177,9 +177,9 @@ class Nat(app_manager.OSKenApp):
                     public_ip = ip_pkt.dst
                     public_port = tcp_pkt.dst_port
                     
-                    nat_key = (private_ip, private_port, public_ip, public_port)
+                    nat_key = (private_ip, private_port, public_ip, public_port) # for simplicity's sake
                     
-                    # Check if this connection already exists
+                    # we gotta make sure this connection doesn't already exist ':D 
                     if nat_key in self.nat_table:
                         # Update timestamp for existing connection
                         nat_port = self.nat_table[nat_key][0]
